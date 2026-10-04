@@ -4,20 +4,47 @@ Full-stack marketplace for browsing and selling digital AI assets.
 
 ## Stack
 - Frontend: React + Vite
-- Backend: Java 21 + Spring Boot
-- API: REST
+- Backend: Java 21 business/service layer
+- API: Java 21 + Spring Boot REST service
 
 ## Structure
-- `frontend/` React application
-- `backend/` Spring Boot API
+- `frontend/` React web application only
+- `backend/` Java domain/business/service logic only
+- `api/` Spring Boot REST API only
+- `pom.xml` parent Maven build for backend + API
+
+## Architecture
+
+```text
+React Frontend
+     |
+     | HTTP/JSON
+     v
+Spring Boot API
+     |
+     v
+Java Backend Services
+     |
+     v
+Database / persistence layer
+```
+
+The frontend must not contain backend business logic. The API owns HTTP controllers and request/response handling. The backend owns marketplace business rules, services, and persistence.
 
 ## Run locally
 
-### Backend
+### Build Java modules
 ```bash
-cd backend
+mvn clean install
+```
+
+### API
+```bash
+cd api
 mvn spring-boot:run
 ```
+
+API default address: `http://localhost:8080/api`
 
 ### Frontend
 ```bash
@@ -26,4 +53,4 @@ npm install
 npm run dev
 ```
 
-The frontend expects the API at `http://localhost:8080/api`.
+Configure the frontend production API base URL with an environment variable when the backend API is deployed.
