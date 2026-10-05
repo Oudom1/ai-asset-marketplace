@@ -30,6 +30,8 @@ jobs:
         run: npm install
       - name: Build
         working-directory: frontend
+        env:
+          VITE_API_URL: https://ai-asset-marketplace-api.onrender.com
         run: npm run build
       - uses: actions/configure-pages@v5
         with:
