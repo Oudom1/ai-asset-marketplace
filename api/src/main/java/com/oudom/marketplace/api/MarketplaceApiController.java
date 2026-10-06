@@ -1,7 +1,8 @@
 package com.oudom.marketplace.api;
 
 import com.oudom.marketplace.MarketplaceService;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -13,18 +14,11 @@ import java.util.Map;
 public class MarketplaceApiController {
 
     private final MarketplaceService service = new MarketplaceService();
+    private final PayWayService payWayService;
 
-    @Value("${payway.environment:sandbox}")
-    private String paywayEnvironment;
-
-    @Value("${payway.merchant-id:}")
-    private String paywayMerchantId;
-
-    @Value("${payway.api-key:}")
-    private String paywayApiKey;
-
-    @Value("${payway.checkout-url:https://checkout-sandbox.payway.com.kh/api/payment-gateway/v1/payments/purchase}")
-    private String paywayCheckoutUrl;
+    public MarketplaceApiController(PayWayService payWayService) {
+        this.payWayService = payWayService;
+    }
 
     @GetMapping("/health")
     public Map<String, Object> health() {
@@ -51,43 +45,62 @@ public class MarketplaceApiController {
         return service.checkout(request);
     }
 
-
     @GetMapping("/payway/config")
     public Map<String, Object> paywayConfig() {
-        boolean configured = paywayMerchantId != null && !paywayMerchantId.isBlank()
-            && paywayApiKey != null && !paywayApiKey.isBlank();
-        return Map.of(
-            "provider", "ABA PayWay",
-            "environment", paywayEnvironment,
-            "configured", configured,
-            "checkoutUrl", configured ? paywayCheckoutUrl : "",
-            "message", configured
-                ? "ABA PayWay sandbox credentials are configured."
-                : "Add PAYWAY_MERCHANT_ID and PAYWAY_API_KEY to enable real sandbox checkout."
-        );
+        return payWayService.config();
     }
 
-    @PostMapping("/payway/checkout")
-    public Map<String, Object> paywayCheckout(@RequestBody Map<String, Object> request) {
-        boolean configured = paywayMerchantId != null && !paywayMerchantId.isBlank()
-            && paywayApiKey != null && !paywayApiKey.isBlank();
-        if (!configured) {
-            return Map.of(
-                "provider", "ABA PayWay",
-                "environment", paywayEnvironment,
-                "configured", false,
-                "checkoutUrl", "",
-                "message", "ABA PayWay sandbox credentials are not configured on the backend yet."
-            );
+    @PostMapping("/payway/qr")
+    public ResponseEntity<Map<String, Object>> generatePayWayQr(@RequestBody Map<String, Object> request) {
+        try {
+            Map<String, Object> result = payWayService.generateQr(request);
+            if (Boolean.FALSE.equals(result.get("configured"))) {
+                return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(result);
+            }
+            return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(Map.of(
+                "success", false,
+                "message", "Unable to generate ABA PayWay QR.",
+                "error", e.getMessage() == null ? "Unknown PayWay error" : e.getMessage()
+            ));
         }
+    }
 
-        return Map.of(
-            "provider", "ABA PayWay",
-            "environment", paywayEnvironment,
-            "configured", true,
-            "checkoutUrl", paywayCheckoutUrl,
-            "message", "PayWay checkout endpoint is ready. Signed transaction fields are generated after sandbox credentials are supplied."
-        );
+    @GetMapping("/payway/status/{tranId}")
+    public ResponseEntity<Map<String, Object>> payWayStatus(@PathVariable String tranId) {
+        try {
+            return ResponseEntity.ok(payWayService.checkStatus(tranId));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(Map.of(
+                "tranId", tranId,
+                "paid", false,
+                "paymentStatus", "PENDING",
+                "message", "Unable to verify payment status right now."
+            ));
+        }
+    }
+
+    @PostMapping("/payway/callback")
+    public ResponseEntity<Map<String, Object>> payWayCallback(
+        @RequestBody Map<String, Object> body,
+        @RequestHeader(value = "X-PayWay-HMAC-SHA512", required = false) String signature
+    ) {
+        try {
+            if (!payWayService.verifyCallback(body, signature)) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of(
+                    "success", false,
+                    "message", "Invalid PayWay callback signature."
+                ));
+            }
+            payWayService.acceptCallback(body);
+            return ResponseEntity.ok(Map.of("success", true));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of(
+                "success", false,
+                "message", "Unable to process PayWay callback."
+            ));
+        }
     }
 
     @PostMapping("/seller/assets")
