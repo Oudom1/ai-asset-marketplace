@@ -173,67 +173,41 @@ function PayWayPayment({items,total,user,onBack}) {
           <div><strong>ABA PayWay</strong><span>Secure Checkout</span></div>
         </div>
         <div className="payway-badge">{String(state.environment||'sandbox').toUpperCase()}</div>
-        <h1>Complete your payment</h1>
-        <p className="muted">Continue to ABA PayWay to choose ABA PAY, KHQR, card, or another enabled payment method.</p>
+        <h1>Scan to pay</h1>
+        <p className="muted">Pay securely with ABA PayWay / KHQR.</p>
+
+        <div className="payway-qr-wrap">
+          <div className="payway-qr-preview" aria-label="ABA PayWay QR preview">
+            <div className="qr-grid">
+              {Array.from({length:81}).map((_,i)=><i key={i} className={(i%3===0||i%7===0||i===40)?'on':''}></i>)}
+            </div>
+          </div>
+          <div className="qr-caption">
+            {state.configured ? 'ABA PayWay sandbox connected — continue below to generate the payable QR.' : 'Sandbox QR preview — not payable until merchant credentials are configured.'}
+          </div>
+        </div>
+
         <div className="payway-summary">
           <div><span>Items</span><strong>{items.length}</strong></div>
           <div><span>Currency</span><strong>USD</strong></div>
-          <div className="payway-total"><span>Total</span><strong>{'
-  const [form,setForm]=useState({title:'',category:'Dashboard',price:'12',image:'https://images.unsplash.com/photo-1558655146-9f40138edfeb?auto=format&fit=crop&w=1200&q=80',description:''});
-  const submit=async(e)=>{e.preventDefault();const asset={...form,id:Date.now(),price:Number(form.price),creator:'You',status:'PENDING_REVIEW'};try{await apiFetch('/api/seller/assets',{method:'POST',body:JSON.stringify(form)});}catch{}setAssets(prev=>[asset,...prev]);setForm({...form,title:'',description:''});flash('Asset submitted for admin review.');};
-  return <section className="page"><div className="dashboard-header"><div><span className="eyebrow">SELLER CENTER</span><h1>Creator dashboard</h1><p>Upload products and manage your marketplace business.</p></div></div><div className="seller-layout"><form className="panel upload-form" onSubmit={submit}><h2>Upload new asset</h2><label>Title<input required value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></label><label>Category<select value={form.category} onChange={e=>setForm({...form,category:e.target.value})}><option>Dashboard</option><option>UI Design</option><option>AI</option><option>Data Analysis</option></select></label><label>Price (USD)<input required type="number" min="0" value={form.price} onChange={e=>setForm({...form,price:e.target.value})}/></label><label>Preview image URL<input required value={form.image} onChange={e=>setForm({...form,image:e.target.value})}/></label><label>Description<textarea value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label><button className="primary" type="submit"><Upload size={18}/> Submit for review</button></form><div><div className="stat-grid"><Stat icon={Package} label="Assets" value={assets.length}/><Stat icon={DollarSign} label="Revenue" value="$1,284"/><Stat icon={ShoppingCart} label="Orders" value="96"/><Stat icon={Heart} label="Favorites" value="418"/></div><div className="panel"><div className="panel-head"><h2>Your products</h2></div><table><thead><tr><th>Product</th><th>Category</th><th>Price</th><th>Status</th></tr></thead><tbody>{assets.slice(0,8).map(a=><tr key={a.id}><td><div className="product-cell"><img src={a.image} alt=""/><span>{a.title}</span></div></td><td>{a.category}</td><td>${a.price}</td><td><span className={`status ${a.status==='PENDING_REVIEW'?'pending':''}`}>{a.status||'PUBLISHED'}</span></td></tr>)}</tbody></table></div></div></div></section>;
-}
-
-function AdminDashboard({assets,setAssets,flash}) {
-  const pending=assets.filter(a=>a.status==='PENDING_REVIEW');
-  const approve=async(id)=>{try{await apiFetch(`/api/admin/assets/${id}/approve`,{method:'POST'});}catch{}setAssets(prev=>prev.map(a=>a.id===id?{...a,status:'PUBLISHED'}:a));flash('Asset approved and published.');};
-  const reject=(id)=>{setAssets(prev=>prev.map(a=>a.id===id?{...a,status:'REJECTED'}:a));flash('Asset rejected.');};
-  return <section className="page"><div className="dashboard-header"><div><span className="eyebrow">ADMIN</span><h1>Marketplace control center</h1><p>Review products, creators and marketplace activity.</p></div></div><div className="stat-grid"><Stat icon={Package} label="Assets" value={assets.length}/><Stat icon={Users} label="Creators" value="24"/><Stat icon={ShoppingCart} label="Pending review" value={pending.length}/><Stat icon={DollarSign} label="GMV this month" value="$8,640"/></div><div className="admin-grid"><div className="panel"><div className="panel-head"><h2>Review queue</h2><span>{pending.length} pending</span></div>{pending.length===0?<div className="empty compact">No pending submissions.</div>:pending.map(a=><div className="review-row" key={a.id}><img src={a.image} alt=""/><div><strong>{a.title}</strong><span>{a.creator}</span></div><button className="approve" onClick={()=>approve(a.id)}>Approve</button><button className="reject" onClick={()=>reject(a.id)}><X size={16}/></button></div>)}</div><div className="panel"><div className="panel-head"><h2>Marketplace health</h2></div><div className="health"><div><span>Approval rate</span><strong>94%</strong></div><div><span>Refund rate</span><strong>1.8%</strong></div><div><span>Active sellers</span><strong>24</strong></div><div><span>New users</span><strong>138</strong></div></div></div></div></section>;
-}
-
-function Orders({onBack}) { const orders=readJson('market-orders',[]); return <section className="page"><button className="back" onClick={onBack}><ArrowLeft size={18}/> Back to marketplace</button><div className="dashboard-header"><div><h1>Order history</h1><p>Your completed purchases.</p></div></div>{orders.length===0?<div className="empty">No completed orders yet.</div>:<div className="panel order-list">{orders.map(o=><div className="order-row" key={o.id}><div><strong>Order #{String(o.id).slice(-6)}</strong><span>{new Date(o.createdAt).toLocaleString()}</span></div><span>{o.items.length} item{o.items.length===1?'':'s'}</span><strong>${Number(o.total).toFixed(2)}</strong></div>)}</div>}</section>; }
-
-function AuthModal({onClose,onLogin}) { const [name,setName]=useState('Oudom'); const [email,setEmail]=useState(''); return <div className="modal-backdrop" onMouseDown={onClose}><div className="modal" onMouseDown={e=>e.stopPropagation()}><button className="modal-x" onClick={onClose}><X size={18}/></button><span className="eyebrow">ACCOUNT</span><h2>Sign in to AI Asset Marketplace</h2><p className="muted">Demo account mode. Production authentication can be connected to the Java API.</p><label>Name<input value={name} onChange={e=>setName(e.target.value)}/></label><label>Email<input type="email" required value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"/></label><button className="primary wide" onClick={()=>onLogin({name:name.trim()||'User',email})}>Continue</button></div></div>; }
-
-function Stat({icon:Icon,label,value}) { return <div className="stat"><div className="stat-icon"><Icon size={20}/></div><div><span>{label}</span><strong>{value}</strong></div></div>; }
-
-createRoot(document.getElementById('root')).render(<App/>);
- + Number(total).toFixed(2)}</strong></div>
+          <div className="payway-total"><span>Total</span><strong>{'$' + Number(total).toFixed(2)}</strong></div>
         </div>
+
         {state.loading
           ? <div className="payway-status">Checking ABA PayWay connection…</div>
           : state.configured
             ? <div className="payway-status ready">ABA PayWay sandbox is connected and ready.</div>
             : <div className="payway-status warning">
-                <strong>Sandbox integration is ready for credentials.</strong>
-                <span>{state.message || 'Add the ABA PayWay Merchant ID and API key to the backend environment to enable real sandbox payment.'}</span>
+                <strong>Real QR requires ABA PayWay sandbox credentials.</strong>
+                <span>{state.message || 'Add PAYWAY_MERCHANT_ID and PAYWAY_API_KEY on the backend to generate a payable QR.'}</span>
               </div>
         }
+
         <button className="payway-pay" disabled={state.loading||starting||!state.configured} onClick={startPayment}>
-          {starting ? 'Opening ABA PayWay…' : state.configured ? ('Pay 
-  const [form,setForm]=useState({title:'',category:'Dashboard',price:'12',image:'https://images.unsplash.com/photo-1558655146-9f40138edfeb?auto=format&fit=crop&w=1200&q=80',description:''});
-  const submit=async(e)=>{e.preventDefault();const asset={...form,id:Date.now(),price:Number(form.price),creator:'You',status:'PENDING_REVIEW'};try{await apiFetch('/api/seller/assets',{method:'POST',body:JSON.stringify(form)});}catch{}setAssets(prev=>[asset,...prev]);setForm({...form,title:'',description:''});flash('Asset submitted for admin review.');};
-  return <section className="page"><div className="dashboard-header"><div><span className="eyebrow">SELLER CENTER</span><h1>Creator dashboard</h1><p>Upload products and manage your marketplace business.</p></div></div><div className="seller-layout"><form className="panel upload-form" onSubmit={submit}><h2>Upload new asset</h2><label>Title<input required value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></label><label>Category<select value={form.category} onChange={e=>setForm({...form,category:e.target.value})}><option>Dashboard</option><option>UI Design</option><option>AI</option><option>Data Analysis</option></select></label><label>Price (USD)<input required type="number" min="0" value={form.price} onChange={e=>setForm({...form,price:e.target.value})}/></label><label>Preview image URL<input required value={form.image} onChange={e=>setForm({...form,image:e.target.value})}/></label><label>Description<textarea value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label><button className="primary" type="submit"><Upload size={18}/> Submit for review</button></form><div><div className="stat-grid"><Stat icon={Package} label="Assets" value={assets.length}/><Stat icon={DollarSign} label="Revenue" value="$1,284"/><Stat icon={ShoppingCart} label="Orders" value="96"/><Stat icon={Heart} label="Favorites" value="418"/></div><div className="panel"><div className="panel-head"><h2>Your products</h2></div><table><thead><tr><th>Product</th><th>Category</th><th>Price</th><th>Status</th></tr></thead><tbody>{assets.slice(0,8).map(a=><tr key={a.id}><td><div className="product-cell"><img src={a.image} alt=""/><span>{a.title}</span></div></td><td>{a.category}</td><td>${a.price}</td><td><span className={`status ${a.status==='PENDING_REVIEW'?'pending':''}`}>{a.status||'PUBLISHED'}</span></td></tr>)}</tbody></table></div></div></div></section>;
-}
-
-function AdminDashboard({assets,setAssets,flash}) {
-  const pending=assets.filter(a=>a.status==='PENDING_REVIEW');
-  const approve=async(id)=>{try{await apiFetch(`/api/admin/assets/${id}/approve`,{method:'POST'});}catch{}setAssets(prev=>prev.map(a=>a.id===id?{...a,status:'PUBLISHED'}:a));flash('Asset approved and published.');};
-  const reject=(id)=>{setAssets(prev=>prev.map(a=>a.id===id?{...a,status:'REJECTED'}:a));flash('Asset rejected.');};
-  return <section className="page"><div className="dashboard-header"><div><span className="eyebrow">ADMIN</span><h1>Marketplace control center</h1><p>Review products, creators and marketplace activity.</p></div></div><div className="stat-grid"><Stat icon={Package} label="Assets" value={assets.length}/><Stat icon={Users} label="Creators" value="24"/><Stat icon={ShoppingCart} label="Pending review" value={pending.length}/><Stat icon={DollarSign} label="GMV this month" value="$8,640"/></div><div className="admin-grid"><div className="panel"><div className="panel-head"><h2>Review queue</h2><span>{pending.length} pending</span></div>{pending.length===0?<div className="empty compact">No pending submissions.</div>:pending.map(a=><div className="review-row" key={a.id}><img src={a.image} alt=""/><div><strong>{a.title}</strong><span>{a.creator}</span></div><button className="approve" onClick={()=>approve(a.id)}>Approve</button><button className="reject" onClick={()=>reject(a.id)}><X size={16}/></button></div>)}</div><div className="panel"><div className="panel-head"><h2>Marketplace health</h2></div><div className="health"><div><span>Approval rate</span><strong>94%</strong></div><div><span>Refund rate</span><strong>1.8%</strong></div><div><span>Active sellers</span><strong>24</strong></div><div><span>New users</span><strong>138</strong></div></div></div></div></section>;
-}
-
-function Orders({onBack}) { const orders=readJson('market-orders',[]); return <section className="page"><button className="back" onClick={onBack}><ArrowLeft size={18}/> Back to marketplace</button><div className="dashboard-header"><div><h1>Order history</h1><p>Your completed demo purchases.</p></div></div>{orders.length===0?<div className="empty">No completed orders yet.</div>:<div className="panel order-list">{orders.map(o=><div className="order-row" key={o.id}><div><strong>Order #{String(o.id).slice(-6)}</strong><span>{new Date(o.createdAt).toLocaleString()}</span></div><span>{o.items.length} item{o.items.length===1?'':'s'}</span><strong>${Number(o.total).toFixed(2)}</strong></div>)}</div>}</section>; }
-
-function AuthModal({onClose,onLogin}) { const [name,setName]=useState('Oudom'); const [email,setEmail]=useState(''); return <div className="modal-backdrop" onMouseDown={onClose}><div className="modal" onMouseDown={e=>e.stopPropagation()}><button className="modal-x" onClick={onClose}><X size={18}/></button><span className="eyebrow">ACCOUNT</span><h2>Sign in to AI Asset Marketplace</h2><p className="muted">Demo account mode. Production authentication can be connected to the Java API.</p><label>Name<input value={name} onChange={e=>setName(e.target.value)}/></label><label>Email<input type="email" required value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"/></label><button className="primary wide" onClick={()=>onLogin({name:name.trim()||'User',email})}>Continue</button></div></div>; }
-
-function Stat({icon:Icon,label,value}) { return <div className="stat"><div className="stat-icon"><Icon size={20}/></div><div><span>{label}</span><strong>{value}</strong></div></div>; }
-
-createRoot(document.getElementById('root')).render(<App/>);
- + Number(total).toFixed(2) + ' with ABA PayWay') : 'ABA PayWay credentials required'}
+          {starting ? 'Generating ABA PayWay QR…' : state.configured ? ('Generate QR for $' + Number(total).toFixed(2)) : 'ABA PayWay credentials required'}
         </button>
         <div className="payway-methods"><span>ABA PAY</span><span>KHQR</span><span>VISA</span><span>Mastercard</span></div>
-        <small>Payment status must be confirmed by the PayWay callback before an order is marked paid.</small>
+        <small>An order is completed only after ABA PayWay confirms payment.</small>
       </div>
     </div>
   </section>;
@@ -252,7 +226,7 @@ function AdminDashboard({assets,setAssets,flash}) {
   return <section className="page"><div className="dashboard-header"><div><span className="eyebrow">ADMIN</span><h1>Marketplace control center</h1><p>Review products, creators and marketplace activity.</p></div></div><div className="stat-grid"><Stat icon={Package} label="Assets" value={assets.length}/><Stat icon={Users} label="Creators" value="24"/><Stat icon={ShoppingCart} label="Pending review" value={pending.length}/><Stat icon={DollarSign} label="GMV this month" value="$8,640"/></div><div className="admin-grid"><div className="panel"><div className="panel-head"><h2>Review queue</h2><span>{pending.length} pending</span></div>{pending.length===0?<div className="empty compact">No pending submissions.</div>:pending.map(a=><div className="review-row" key={a.id}><img src={a.image} alt=""/><div><strong>{a.title}</strong><span>{a.creator}</span></div><button className="approve" onClick={()=>approve(a.id)}>Approve</button><button className="reject" onClick={()=>reject(a.id)}><X size={16}/></button></div>)}</div><div className="panel"><div className="panel-head"><h2>Marketplace health</h2></div><div className="health"><div><span>Approval rate</span><strong>94%</strong></div><div><span>Refund rate</span><strong>1.8%</strong></div><div><span>Active sellers</span><strong>24</strong></div><div><span>New users</span><strong>138</strong></div></div></div></div></section>;
 }
 
-function Orders({onBack}) { const orders=readJson('market-orders',[]); return <section className="page"><button className="back" onClick={onBack}><ArrowLeft size={18}/> Back to marketplace</button><div className="dashboard-header"><div><h1>Order history</h1><p>Your completed demo purchases.</p></div></div>{orders.length===0?<div className="empty">No completed orders yet.</div>:<div className="panel order-list">{orders.map(o=><div className="order-row" key={o.id}><div><strong>Order #{String(o.id).slice(-6)}</strong><span>{new Date(o.createdAt).toLocaleString()}</span></div><span>{o.items.length} item{o.items.length===1?'':'s'}</span><strong>${Number(o.total).toFixed(2)}</strong></div>)}</div>}</section>; }
+function Orders({onBack}) { const orders=readJson('market-orders',[]); return <section className="page"><button className="back" onClick={onBack}><ArrowLeft size={18}/> Back to marketplace</button><div className="dashboard-header"><div><h1>Order history</h1><p>Your completed purchases.</p></div></div>{orders.length===0?<div className="empty">No completed orders yet.</div>:<div className="panel order-list">{orders.map(o=><div className="order-row" key={o.id}><div><strong>Order #{String(o.id).slice(-6)}</strong><span>{new Date(o.createdAt).toLocaleString()}</span></div><span>{o.items.length} item{o.items.length===1?'':'s'}</span><strong>${Number(o.total).toFixed(2)}</strong></div>)}</div>}</section>; }
 
 function AuthModal({onClose,onLogin}) { const [name,setName]=useState('Oudom'); const [email,setEmail]=useState(''); return <div className="modal-backdrop" onMouseDown={onClose}><div className="modal" onMouseDown={e=>e.stopPropagation()}><button className="modal-x" onClick={onClose}><X size={18}/></button><span className="eyebrow">ACCOUNT</span><h2>Sign in to AI Asset Marketplace</h2><p className="muted">Demo account mode. Production authentication can be connected to the Java API.</p><label>Name<input value={name} onChange={e=>setName(e.target.value)}/></label><label>Email<input type="email" required value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"/></label><button className="primary wide" onClick={()=>onLogin({name:name.trim()||'User',email})}>Continue</button></div></div>; }
 
