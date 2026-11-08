@@ -10,7 +10,6 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api")
-@CrossOrigin(origins = "*")
 public class MarketplaceApiController {
 
     private final MarketplaceService service = new MarketplaceService();
@@ -22,7 +21,14 @@ public class MarketplaceApiController {
 
     @GetMapping("/health")
     public Map<String, Object> health() {
-        return Map.of("status", "UP", "service", "marketplace-api", "stack", "Java 21 + Spring Boot");
+        Map<String,Object> payway = payWayService.config();
+        return Map.of(
+            "status", "UP",
+            "service", "marketplace-api",
+            "stack", "Java 21 + Spring Boot",
+            "paywayConfigured", payway.get("configured"),
+            "databaseConfigured", payway.get("databaseConfigured")
+        );
     }
 
     @GetMapping("/assets")
@@ -50,19 +56,23 @@ public class MarketplaceApiController {
         return payWayService.config();
     }
 
-    @PostMapping("/payway/qr")
-    public ResponseEntity<Map<String, Object>> generatePayWayQr(@RequestBody Map<String, Object> request) {
+    @PostMapping({"/payway/initiate", "/payway/qr"})
+    public ResponseEntity<Map<String, Object>> initiatePayWay(@RequestBody Map<String, Object> request) {
         try {
-            Map<String, Object> result = payWayService.generateQr(request);
+            Map<String,Object> result = payWayService.initiate(request);
             if (Boolean.FALSE.equals(result.get("configured"))) {
                 return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(result);
             }
+            if (Boolean.FALSE.equals(result.get("success"))) {
+                return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(result);
+            }
             return ResponseEntity.ok(result);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("success", false, "message", e.getMessage()));
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(Map.of(
                 "success", false,
-                "message", "Unable to generate ABA PayWay QR.",
-                "error", e.getMessage() == null ? "Unknown PayWay error" : e.getMessage()
+                "message", "Unable to initiate ABA PayWay payment."
             ));
         }
     }
@@ -71,35 +81,57 @@ public class MarketplaceApiController {
     public ResponseEntity<Map<String, Object>> payWayStatus(@PathVariable String tranId) {
         try {
             return ResponseEntity.ok(payWayService.checkStatus(tranId));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of(
+                "tranId", tranId, "paid", false, "paymentStatus", "UNKNOWN", "message", e.getMessage()
+            ));
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(Map.of(
-                "tranId", tranId,
-                "paid", false,
-                "paymentStatus", "PENDING",
+                "tranId", tranId, "paid", false, "paymentStatus", "PENDING",
                 "message", "Unable to verify payment status right now."
             ));
         }
     }
 
     @PostMapping("/payway/callback")
-    public ResponseEntity<Map<String, Object>> payWayCallback(
-        @RequestBody Map<String, Object> body,
-        @RequestHeader(value = "X-PayWay-HMAC-SHA512", required = false) String signature
+    public ResponseEntity<Map<String, Object>> payWayCallback(@RequestBody Map<String, Object> body) {
+        try {
+            // Callback is notification only. PayWayService always verifies server-to-server before PAID.
+            return ResponseEntity.ok(payWayService.acceptCallback(body));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("success", false, "message", e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(Map.of(
+                "success", false, "message", "Payment notification received but verification could not be completed."
+            ));
+        }
+    }
+
+    @GetMapping("/orders/{orderId}")
+    public ResponseEntity<Map<String,Object>> orderStatus(
+        @PathVariable String orderId,
+        @RequestHeader("X-Buyer-Email") String buyerEmail
     ) {
         try {
-            if (!payWayService.verifyCallback(body, signature)) {
-                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of(
-                    "success", false,
-                    "message", "Invalid PayWay callback signature."
-                ));
-            }
-            payWayService.acceptCallback(body);
-            return ResponseEntity.ok(Map.of("success", true));
+            return ResponseEntity.ok(payWayService.orderStatus(orderId, buyerEmail));
+        } catch (SecurityException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("message", "Order access denied."));
         } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of(
-                "success", false,
-                "message", "Unable to process PayWay callback."
-            ));
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("message", "Order not found."));
+        }
+    }
+
+    @GetMapping("/orders/{orderId}/access")
+    public ResponseEntity<Map<String,Object>> orderAccess(
+        @PathVariable String orderId,
+        @RequestHeader("X-Buyer-Email") String buyerEmail
+    ) {
+        try {
+            return ResponseEntity.ok(payWayService.access(orderId, buyerEmail));
+        } catch (SecurityException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("message", "Order access denied."));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("message", "Order not found."));
         }
     }
 
