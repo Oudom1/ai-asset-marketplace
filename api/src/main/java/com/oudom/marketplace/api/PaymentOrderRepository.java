@@ -156,8 +156,10 @@ public class PaymentOrderRepository {
 
     private static String normalize(String url) {
         if (url == null) return "";
-        if (url.startsWith("postgresql://")) return "jdbc:" + url;
-        if (url.startsWith("postgres://")) return "jdbc:postgresql://" + url.substring("postgres://".length());
-        return url;
+        String normalized = url;
+        if (normalized.startsWith("postgresql://")) normalized = "jdbc:" + normalized;
+        else if (normalized.startsWith("postgres://")) normalized = "jdbc:postgresql://" + normalized.substring("postgres://".length());
+        normalized = normalized.replace("channel_binding=require&", "").replace("&channel_binding=require", "").replace("?channel_binding=require", "");
+        return normalized;
     }
 }
