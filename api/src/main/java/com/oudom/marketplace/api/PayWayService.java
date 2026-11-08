@@ -257,7 +257,8 @@ public class PayWayService {
     }
 
     private String newTransactionId() {
-        return Long.toUnsignedString(UUID.randomUUID().getMostSignificantBits()).substring(0, 18);
+        int suffix = java.util.concurrent.ThreadLocalRandom.current().nextInt(10000, 100000);
+        return String.valueOf(System.currentTimeMillis()) + suffix;
     }
 
     private String hmacBase64(String value, String secret) throws Exception {
