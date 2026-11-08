@@ -2,6 +2,7 @@ package com.oudom.marketplace.api;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.oudom.marketplace.MarketplaceService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -15,38 +16,32 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.Base64;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.TreeMap;
-import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.*;
+import java.util.stream.Collectors;
 
 @Service
 public class PayWayService {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final HttpClient httpClient = HttpClient.newBuilder().build();
-    private final Map<String, String> localStatus = new ConcurrentHashMap<>();
+    private final MarketplaceService marketplace = new MarketplaceService();
+    private final PaymentOrderRepository orders;
 
     @Value("${payway.environment:sandbox}")
     private String environment;
-
     @Value("${payway.merchant-id:}")
     private String merchantId;
-
     @Value("${payway.api-key:}")
     private String apiKey;
-
     @Value("${payway.qr-url:https://checkout-sandbox.payway.com.kh/api/payment-gateway/v1/payments/generate-qr}")
     private String qrUrl;
-
     @Value("${payway.check-url:https://checkout-sandbox.payway.com.kh/api/payment-gateway/v1/payments/check-transaction-2}")
     private String checkUrl;
-
     @Value("${payway.callback-url:https://ai-asset-marketplace-api.onrender.com/api/payway/callback}")
     private String callbackUrl;
+
+    public PayWayService(PaymentOrderRepository orders) {
+        this.orders = orders;
+    }
 
     public boolean configured() {
         return merchantId != null && !merchantId.isBlank() && apiKey != null && !apiKey.isBlank();
@@ -57,125 +52,44 @@ public class PayWayService {
             "provider", "ABA PayWay",
             "environment", environment,
             "configured", configured(),
-            "message", configured()
-                ? "ABA PayWay sandbox credentials are configured."
-                : "Add PAYWAY_MERCHANT_ID and PAYWAY_API_KEY to the backend environment."
+            "databaseConfigured", orders.configured(),
+            "message", configured() && orders.configured()
+                ? "ABA PayWay and payment persistence are configured."
+                : "PayWay credentials and DATABASE_URL must be configured on the backend."
         );
     }
 
-    public Map<String, Object> generateQr(Map<String, Object> request) throws Exception {
-        if (!configured()) {
-            return Map.of(
-                "configured", false,
-                "environment", environment,
-                "message", "ABA PayWay sandbox credentials are not configured."
-            );
-        }
+    public Map<String, Object> initiate(Map<String, Object> request) throws Exception {
+        if (!configured()) return Map.of("configured", false, "message", "ABA PayWay credentials are not configured.");
+        if (!orders.configured()) return Map.of("configured", false, "message", "Payment database is not configured.");
 
-        String reqTime = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
-        String tranId = String.valueOf(System.currentTimeMillis());
-        if (tranId.length() > 20) tranId = tranId.substring(tranId.length() - 20);
+        Map<String,Object> customer = castMap(request.get("customer"));
+        String buyerEmail = String.valueOf(customer.getOrDefault("email", "")).trim().toLowerCase(Locale.ROOT);
+        if (buyerEmail.isBlank() || !buyerEmail.contains("@")) throw new IllegalArgumentException("A valid buyer email is required.");
 
-        BigDecimal amount = new BigDecimal(String.valueOf(request.getOrDefault("amount", "0")));
-        String currency = String.valueOf(request.getOrDefault("currency", "USD"));
-        Map<String, Object> customer = castMap(request.get("customer"));
-        String name = String.valueOf(customer.getOrDefault("name", "")).trim();
-        String firstName = name.isBlank() ? "Customer" : name.split("\\s+", 2)[0];
-        String lastName = name.contains(" ") ? name.substring(name.indexOf(' ') + 1) : "";
-        String email = String.valueOf(customer.getOrDefault("email", ""));
-        String phone = String.valueOf(customer.getOrDefault("phone", ""));
+        List<MarketplaceService.CartItem> items = authoritativeItems(request.get("items"));
+        if (items.isEmpty()) throw new IllegalArgumentException("No valid marketplace items were supplied.");
 
-        List<Map<String, Object>> paywayItems = new ArrayList<>();
-        Object rawItems = request.get("items");
-        if (rawItems instanceof List<?> list) {
-            for (Object item : list) {
-                Map<String, Object> src = castMap(item);
-                Map<String, Object> row = new LinkedHashMap<>();
-                row.put("name", String.valueOf(src.getOrDefault("title", "Marketplace item")));
-                row.put("quantity", 1);
-                row.put("price", new BigDecimal(String.valueOf(src.getOrDefault("price", "0"))));
-                paywayItems.add(row);
-            }
-        }
-        String itemsJson = objectMapper.writeValueAsString(paywayItems);
-        String items = Base64.getEncoder().encodeToString(itemsJson.getBytes(StandardCharsets.UTF_8));
-        String callback = Base64.getEncoder().encodeToString(callbackUrl.getBytes(StandardCharsets.UTF_8));
+        String currency = String.valueOf(request.getOrDefault("currency", "USD")).toUpperCase(Locale.ROOT);
+        if (!Set.of("USD", "KHR").contains(currency)) throw new IllegalArgumentException("Unsupported currency.");
 
-        LinkedHashMap<String, Object> body = new LinkedHashMap<>();
-        body.put("req_time", reqTime);
-        body.put("merchant_id", merchantId);
-        body.put("tran_id", tranId);
-        body.put("first_name", firstName);
-        body.put("last_name", lastName);
-        body.put("email", email);
-        body.put("phone", phone);
-        body.put("amount", amount);
-        body.put("purchase_type", "purchase");
-        body.put("payment_option", "abapay_khqr");
-        body.put("items", items);
-        body.put("currency", currency);
-        body.put("callback_url", callback);
-        body.put("return_deeplink", "");
-        body.put("custom_fields", "");
-        body.put("return_params", "");
-        body.put("payout", "");
-        body.put("lifetime", 6);
-        body.put("qr_image_template", "template3_color");
+        PaymentOrderRepository.PaymentOrder order = orders.createOrder(buyerEmail, currency, items);
+        String tranId = newTransactionId();
+        orders.bindTransaction(order.orderId(), tranId);
+        order = orders.findByOrderId(order.orderId()).orElseThrow();
 
-        StringBuilder toSign = new StringBuilder();
-        for (Object value : body.values()) {
-            toSign.append(value == null ? "" : value);
-        }
-        body.put("hash", hmacBase64(toSign.toString(), apiKey));
-
-        HttpRequest httpRequest = HttpRequest.newBuilder()
-            .uri(URI.create(qrUrl))
-            .header("Content-Type", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
-            .build();
-
-        HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
-        Map<String, Object> parsed = objectMapper.readValue(response.body(), new TypeReference<>() {});
-
-        if (response.statusCode() >= 400) {
-            return Map.of(
-                "configured", true,
-                "environment", environment,
-                "tranId", tranId,
-                "success", false,
-                "message", "ABA PayWay QR request failed.",
-                "paywayResponse", parsed
-            );
-        }
-
-        Object qrImage = parsed.get("qrImage");
-        Object qrString = parsed.get("qrString");
-        localStatus.put(tranId, "PENDING");
-
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("configured", true);
-        result.put("environment", environment);
-        result.put("success", qrImage != null || qrString != null);
-        result.put("tranId", tranId);
-        result.put("qrImage", qrImage == null ? "" : qrImage);
-        result.put("qrString", qrString == null ? "" : qrString);
-        result.put("abapayDeeplink", parsed.getOrDefault("abapay_deeplink", ""));
-        result.put("amount", parsed.getOrDefault("amount", amount));
-        result.put("currency", parsed.getOrDefault("currency", currency));
-        result.put("status", parsed.getOrDefault("status", Map.of()));
-        return result;
+        return generateQr(order, items, customer);
     }
 
     public Map<String, Object> checkStatus(String tranId) throws Exception {
-        String local = localStatus.getOrDefault(tranId, "PENDING");
-        if (!configured() || "PAID".equals(local)) {
-            return Map.of("tranId", tranId, "paymentStatus", local, "paid", "PAID".equals(local));
-        }
+        PaymentOrderRepository.PaymentOrder order = orders.findByTranId(tranId)
+            .orElseThrow(() -> new IllegalArgumentException("Unknown transaction."));
+        if ("PAID".equals(order.status())) return safeStatus(order, true);
+        if (!configured()) return safeStatus(order, false);
 
         String reqTime = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
         String hash = hmacBase64(reqTime + merchantId + tranId, apiKey);
-
-        Map<String, Object> body = new LinkedHashMap<>();
+        Map<String,Object> body = new LinkedHashMap<>();
         body.put("req_time", reqTime);
         body.put("merchant_id", merchantId);
         body.put("tran_id", tranId);
@@ -186,45 +100,164 @@ public class PayWayService {
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
             .build();
-
         HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
-        Map<String, Object> parsed = objectMapper.readValue(response.body(), new TypeReference<>() {});
-        Map<String, Object> data = castMap(parsed.get("data"));
+        if (response.statusCode() >= 400) throw new IllegalStateException("PayWay status check returned HTTP " + response.statusCode());
 
-        boolean paid = "0".equals(String.valueOf(data.get("payment_status_code")))
-            || "APPROVED".equalsIgnoreCase(String.valueOf(data.get("payment_status")));
-        String status = paid ? "PAID" : String.valueOf(data.getOrDefault("payment_status", local));
-        if (paid) localStatus.put(tranId, "PAID");
+        Map<String,Object> parsed = objectMapper.readValue(response.body(), new TypeReference<>() {});
+        Map<String,Object> data = castMap(parsed.get("data"));
+        boolean paid = PaymentVerifier.approvedAndMatches(order, data);
 
-        return Map.of(
-            "tranId", tranId,
-            "paymentStatus", status,
-            "paid", paid,
-            "payway", parsed
-        );
+        String providerStatus = String.valueOf(data.getOrDefault("payment_status", "PENDING")).toUpperCase(Locale.ROOT);
+        String nextStatus = paid ? "PAID"
+            : providerStatus.contains("CANCEL") ? "CANCELLED"
+            : (providerStatus.contains("FAIL") || providerStatus.contains("DECLIN")) ? "FAILED"
+            : "PENDING";
+        String bankRef = String.valueOf(data.getOrDefault("bank_ref", ""));
+        orders.updateVerifiedStatus(tranId, nextStatus, bankRef, paid);
+
+        PaymentOrderRepository.PaymentOrder updated = orders.findByTranId(tranId).orElseThrow();
+        return safeStatus(updated, paid);
     }
 
-    public boolean verifyCallback(Map<String, Object> body, String receivedSignature) throws Exception {
-        if (receivedSignature == null || receivedSignature.isBlank()) return false;
-        TreeMap<String, Object> sorted = new TreeMap<>(body);
-        StringBuilder values = new StringBuilder();
-        for (Object value : sorted.values()) {
-            if (value instanceof Map || value instanceof List) {
-                values.append(objectMapper.writeValueAsString(value));
-            } else {
-                values.append(value == null ? "" : value);
-            }
-        }
-        String expected = hmacBase64(values.toString(), apiKey);
-        return constantTimeEquals(expected, receivedSignature);
+    public Map<String,Object> acceptCallback(Map<String,Object> body) throws Exception {
+        String tranId = String.valueOf(body.getOrDefault("tran_id", body.getOrDefault("transaction_id", ""))).trim();
+        if (tranId.isBlank()) throw new IllegalArgumentException("Missing transaction id.");
+        PaymentOrderRepository.PaymentOrder order = orders.findByTranId(tranId)
+            .orElseThrow(() -> new IllegalArgumentException("Unknown transaction."));
+        orders.recordCallback(tranId);
+        // Callback data is notification only. Never trust it to mark an order PAID.
+        return checkStatus(order.paywayTranId());
     }
 
-    public void acceptCallback(Map<String, Object> body) {
-        String tranId = String.valueOf(body.getOrDefault("tran_id", ""));
-        String status = String.valueOf(body.getOrDefault("status", ""));
-        if (!tranId.isBlank()) {
-            localStatus.put(tranId, "0".equals(status) ? "PAID" : "FAILED");
+    public Map<String,Object> orderStatus(String orderId, String buyerEmail) throws Exception {
+        PaymentOrderRepository.PaymentOrder order = requireBuyer(orderId, buyerEmail);
+        return safeStatus(order, "PAID".equals(order.status()));
+    }
+
+    public Map<String,Object> access(String orderId, String buyerEmail) throws Exception {
+        PaymentOrderRepository.PaymentOrder order = requireBuyer(orderId, buyerEmail);
+        boolean paid = "PAID".equals(order.status()) && order.verifiedAt() != null;
+        if (!paid) return Map.of("orderId", orderId, "unlocked", false, "status", order.status());
+        List<Map<String,Object>> assets = orders.items(orderId).stream()
+            .map(i -> Map.<String,Object>of("assetId", i.assetId(), "title", i.title()))
+            .collect(Collectors.toList());
+        return Map.of("orderId", orderId, "unlocked", true, "status", "PAID", "assets", assets);
+    }
+
+    private Map<String,Object> generateQr(
+        PaymentOrderRepository.PaymentOrder order,
+        List<MarketplaceService.CartItem> items,
+        Map<String,Object> customer
+    ) throws Exception {
+        String reqTime = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
+        String name = String.valueOf(customer.getOrDefault("name", "")).trim();
+        String firstName = name.isBlank() ? "Customer" : name.split("\\s+", 2)[0];
+        String lastName = name.contains(" ") ? name.substring(name.indexOf(' ') + 1) : "";
+        String email = order.buyerEmail();
+        String phone = String.valueOf(customer.getOrDefault("phone", ""));
+
+        List<Map<String,Object>> paywayItems = items.stream().map(item -> {
+            Map<String,Object> row = new LinkedHashMap<>();
+            row.put("name", item.title());
+            row.put("quantity", 1);
+            row.put("price", BigDecimal.valueOf(item.price()).setScale(2));
+            return row;
+        }).toList();
+        String itemsBase64 = Base64.getEncoder().encodeToString(
+            objectMapper.writeValueAsString(paywayItems).getBytes(StandardCharsets.UTF_8));
+        String callback = Base64.getEncoder().encodeToString(callbackUrl.getBytes(StandardCharsets.UTF_8));
+
+        LinkedHashMap<String,Object> body = new LinkedHashMap<>();
+        body.put("req_time", reqTime);
+        body.put("merchant_id", merchantId);
+        body.put("tran_id", order.paywayTranId());
+        body.put("first_name", firstName);
+        body.put("last_name", lastName);
+        body.put("email", email);
+        body.put("phone", phone);
+        body.put("amount", order.amount());
+        body.put("purchase_type", "purchase");
+        body.put("payment_option", "abapay_khqr");
+        body.put("items", itemsBase64);
+        body.put("currency", order.currency());
+        body.put("callback_url", callback);
+        body.put("return_deeplink", "");
+        body.put("custom_fields", "");
+        body.put("return_params", order.orderId());
+        body.put("payout", "");
+        body.put("lifetime", 6);
+        body.put("qr_image_template", "template3_color");
+
+        StringBuilder toSign = new StringBuilder();
+        for (Object value : body.values()) toSign.append(value == null ? "" : value);
+        body.put("hash", hmacBase64(toSign.toString(), apiKey));
+
+        HttpRequest httpRequest = HttpRequest.newBuilder()
+            .uri(URI.create(qrUrl))
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
+            .build();
+        HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+        Map<String,Object> parsed = objectMapper.readValue(response.body(), new TypeReference<>() {});
+        if (response.statusCode() >= 400) {
+            orders.updateVerifiedStatus(order.paywayTranId(), "FAILED", null, false);
+            return Map.of("configured", true, "success", false, "orderId", order.orderId(),
+                "tranId", order.paywayTranId(), "message", "ABA PayWay QR request failed.");
         }
+
+        Object qrImage = parsed.get("qrImage");
+        Object qrString = parsed.get("qrString");
+        Map<String,Object> result = new LinkedHashMap<>();
+        result.put("configured", true);
+        result.put("environment", environment);
+        result.put("success", qrImage != null || qrString != null);
+        result.put("orderId", order.orderId());
+        result.put("tranId", order.paywayTranId());
+        result.put("qrImage", qrImage == null ? "" : qrImage);
+        result.put("qrString", qrString == null ? "" : qrString);
+        result.put("abapayDeeplink", parsed.getOrDefault("abapay_deeplink", ""));
+        result.put("amount", order.amount());
+        result.put("currency", order.currency());
+        result.put("paymentStatus", "PENDING");
+        return result;
+    }
+
+    private List<MarketplaceService.CartItem> authoritativeItems(Object rawItems) {
+        if (!(rawItems instanceof List<?> list)) return List.of();
+        LinkedHashMap<Long,MarketplaceService.CartItem> result = new LinkedHashMap<>();
+        for (Object raw : list) {
+            Map<String,Object> item = castMap(raw);
+            Long id;
+            try { id = Long.valueOf(String.valueOf(item.get("id"))); } catch (Exception e) { continue; }
+            MarketplaceService.Asset asset = marketplace.assetById(id);
+            if (asset != null) result.put(id, new MarketplaceService.CartItem(asset.id(), asset.title(), asset.price()));
+        }
+        return new ArrayList<>(result.values());
+    }
+
+    private PaymentOrderRepository.PaymentOrder requireBuyer(String orderId, String buyerEmail) throws Exception {
+        PaymentOrderRepository.PaymentOrder order = orders.findByOrderId(orderId)
+            .orElseThrow(() -> new IllegalArgumentException("Unknown order."));
+        String email = buyerEmail == null ? "" : buyerEmail.trim().toLowerCase(Locale.ROOT);
+        if (!order.buyerEmail().equals(email)) throw new SecurityException("Order does not belong to this buyer.");
+        return order;
+    }
+
+    private Map<String,Object> safeStatus(PaymentOrderRepository.PaymentOrder order, boolean paid) {
+        Map<String,Object> result = new LinkedHashMap<>();
+        result.put("orderId", order.orderId());
+        result.put("tranId", order.paywayTranId());
+        result.put("paymentStatus", order.status());
+        result.put("paid", paid && "PAID".equals(order.status()) && order.verifiedAt() != null);
+        result.put("unlocked", "PAID".equals(order.status()) && order.verifiedAt() != null);
+        result.put("amount", order.amount());
+        result.put("currency", order.currency());
+        result.put("updatedAt", order.updatedAt().toString());
+        return result;
+    }
+
+    private String newTransactionId() {
+        return Long.toUnsignedString(UUID.randomUUID().getMostSignificantBits()).substring(0, 18);
     }
 
     private String hmacBase64(String value, String secret) throws Exception {
@@ -233,17 +266,8 @@ public class PayWayService {
         return Base64.getEncoder().encodeToString(mac.doFinal(value.getBytes(StandardCharsets.UTF_8)));
     }
 
-    private boolean constantTimeEquals(String a, String b) {
-        byte[] aa = a.getBytes(StandardCharsets.UTF_8);
-        byte[] bb = b.getBytes(StandardCharsets.UTF_8);
-        if (aa.length != bb.length) return false;
-        int diff = 0;
-        for (int i = 0; i < aa.length; i++) diff |= aa[i] ^ bb[i];
-        return diff == 0;
-    }
-
     @SuppressWarnings("unchecked")
-    private Map<String, Object> castMap(Object value) {
-        return value instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
+    private Map<String,Object> castMap(Object value) {
+        return value instanceof Map<?,?> map ? (Map<String,Object>) map : Map.of();
     }
 }
