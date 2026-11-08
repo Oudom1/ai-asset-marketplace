@@ -67,23 +67,32 @@ function App() {
 
   const checkout = () => {
     if (!cart.length) return;
+    if (!user?.email) {
+      setAuthOpen(true);
+      flash('Sign in with your email before starting payment.');
+      return;
+    }
     setView('payway');
   };
 
-  const completePaidOrder = (transactionId) => {
+  const completePaidOrder = ({transactionId, orderId, access}) => {
     const orders = readJson('market-orders', []);
-    orders.unshift({
-      id: transactionId || Date.now(),
-      createdAt: new Date().toISOString(),
-      total: cartTotal,
-      items: cart,
-      paymentProvider: 'ABA PayWay',
-      paymentStatus: 'PAID'
-    });
-    localStorage.setItem('market-orders', JSON.stringify(orders));
+    if (!orders.some(o => o.orderId === orderId)) {
+      orders.unshift({
+        id: transactionId || Date.now(),
+        orderId,
+        createdAt: new Date().toISOString(),
+        total: cartTotal,
+        items: cart,
+        paymentProvider: 'ABA PayWay',
+        paymentStatus: 'PAID',
+        access
+      });
+      localStorage.setItem('market-orders', JSON.stringify(orders));
+    }
     setCart([]);
     setView('orders');
-    flash('ABA PayWay payment confirmed. Order completed.');
+    flash('ABA PayWay payment verified by the server. Purchased assets are unlocked.');
   };
 
   return (
@@ -147,6 +156,7 @@ function Cart({items,total,remove,onBack,checkout}) {
 }
 
 function PayWayPayment({items,total,user,onBack,onPaid}) {
+  const [attempt,setAttempt]=useState(0);
   const [state,setState]=useState({
     loading:true,
     configured:false,
@@ -155,52 +165,71 @@ function PayWayPayment({items,total,user,onBack,onPaid}) {
     qrImage:'',
     qrString:'',
     tranId:'',
-    paymentStatus:'PENDING'
+    orderId:'',
+    paymentStatus:'PENDING',
+    error:''
   });
 
   useEffect(()=>{
     let stopped=false;
     const generate=async()=>{
+      setState(prev=>({...prev,loading:true,error:'',message:''}));
       try{
         const config=await apiFetch('/api/payway/config');
         if(stopped) return;
-        if(!config.configured){
+        if(!config.configured || !config.databaseConfigured){
           setState(prev=>({...prev,loading:false,...config}));
           return;
         }
-        const qr=await apiFetch('/api/payway/qr',{
+        const qr=await apiFetch('/api/payway/initiate',{
           method:'POST',
           body:JSON.stringify({
-            items:items.map(({id,title,price})=>({id,title,price})),
+            items:items.map(({id})=>({id})),
             customer:{name:user?.name||'',email:user?.email||''},
-            amount:total,
             currency:'USD'
           })
         });
         if(stopped) return;
-        setState(prev=>({...prev,loading:false,...config,...qr,paymentStatus:'PENDING'}));
+        setState(prev=>({...prev,loading:false,...config,...qr,paymentStatus:'PENDING',error:''}));
       }catch(e){
-        if(!stopped) setState(prev=>({...prev,loading:false,message:'Unable to generate ABA PayWay QR. Check the sandbox credentials and whitelist settings.'}));
+        if(!stopped) setState(prev=>({...prev,loading:false,error:'Unable to start ABA PayWay payment. Please retry.',message:e?.message||''}));
       }
     };
-    generate();
+    if(items.length && user?.email) generate();
     return()=>{stopped=true;};
-  },[]);
+  },[attempt]);
 
   useEffect(()=>{
-    if(!state.tranId) return;
-    const timer=setInterval(async()=>{
+    if(!state.tranId || !state.orderId) return;
+    let stopped=false;
+    let busy=false;
+    const verify=async()=>{
+      if(busy||stopped) return;
+      busy=true;
       try{
         const status=await apiFetch('/api/payway/status/'+encodeURIComponent(state.tranId));
-        setState(prev=>({...prev,paymentStatus:status.paymentStatus||'PENDING'}));
-        if(status.paid){
-          clearInterval(timer);
-          onPaid(state.tranId);
+        if(stopped) return;
+        const next=status.paymentStatus||'PENDING';
+        setState(prev=>({...prev,paymentStatus:next}));
+        if(status.paid && status.unlocked){
+          stopped=true;
+          const access=await apiFetch('/api/orders/'+encodeURIComponent(state.orderId)+'/access',{
+            headers:{'X-Buyer-Email':user.email}
+          });
+          onPaid({transactionId:state.tranId,orderId:state.orderId,access});
+        } else if(['FAILED','CANCELLED'].includes(next)){
+          stopped=true;
         }
-      }catch{}
-    },3000);
-    return()=>clearInterval(timer);
-  },[state.tranId]);
+      }catch{
+        if(!stopped) setState(prev=>({...prev,message:'Verification is temporarily unavailable. Your order remains locked until the server confirms payment.'}));
+      } finally { busy=false; }
+    };
+    verify();
+    const timer=setInterval(verify,4000);
+    return()=>{stopped=true;clearInterval(timer);};
+  },[state.tranId,state.orderId]);
+
+  const terminal=['FAILED','CANCELLED'].includes(state.paymentStatus);
 
   return <section className="page payway-page">
     <button className="back" onClick={onBack}><ArrowLeft size={18}/> Back to cart</button>
@@ -208,26 +237,26 @@ function PayWayPayment({items,total,user,onBack,onPaid}) {
       <div className="payway-card">
         <div className="payway-brand">
           <div className="aba-mark">ABA</div>
-          <div><strong>ABA PayWay</strong><span>Secure Checkout</span></div>
+          <div><strong>ABA PayWay</strong><span>Server-verified secure checkout</span></div>
         </div>
         <div className="payway-badge">{String(state.environment||'sandbox').toUpperCase()}</div>
 
-        <h1>Scan to pay</h1>
-        <p className="muted">Scan the dynamic KHQR using ABA Mobile or another KHQR-supported banking app.</p>
+        <h1>{terminal?'Payment not completed':'Scan to pay'}</h1>
+        <p className="muted">The marketplace unlocks assets only after the backend verifies the transaction directly with ABA PayWay.</p>
 
         <div className="payway-qr-wrap">
           {state.loading
-            ? <div className="payway-qr-loading">Generating secure QR…</div>
-            : state.qrImage
+            ? <div className="payway-qr-loading">Creating pending order and secure QR…</div>
+            : state.qrImage && !terminal
               ? <img className="payway-real-qr" src={state.qrImage} alt="ABA PayWay payment QR"/>
-              : <div className="payway-qr-missing">QR unavailable</div>
+              : <div className="payway-qr-missing">{terminal?state.paymentStatus:'QR unavailable'}</div>
           }
           <div className="qr-caption">
             {state.qrImage
-              ? 'This QR was generated by ABA PayWay for this transaction.'
+              ? 'This QR is bound to the server-created order amount and transaction ID.'
               : state.configured
-                ? 'ABA PayWay did not return a QR. Check the API response and whitelist configuration.'
-                : 'Add the PayWay sandbox credentials to generate a real payable QR.'
+                ? (state.error || 'ABA PayWay did not return a QR. Retry or check merchant whitelist configuration.')
+                : 'PayWay credentials and payment database must be configured on the backend.'
             }
           </div>
         </div>
@@ -235,18 +264,20 @@ function PayWayPayment({items,total,user,onBack,onPaid}) {
         <div className="payway-summary">
           <div><span>Items</span><strong>{items.length}</strong></div>
           <div><span>Currency</span><strong>USD</strong></div>
+          <div><span>Order</span><strong>{state.orderId || 'Creating…'}</strong></div>
           <div><span>Transaction</span><strong>{state.tranId || 'Waiting'}</strong></div>
           <div className="payway-total"><span>Total</span><strong>{'$' + Number(total).toFixed(2)}</strong></div>
         </div>
 
-        {state.qrImage
-          ? <div className="payway-status ready"><strong>QR ready.</strong><span>Waiting for ABA PayWay payment confirmation…</span><span>Status: {state.paymentStatus}</span></div>
-          : <div className="payway-status warning"><strong>{state.loading?'Connecting to ABA PayWay…':'Payment setup incomplete.'}</strong><span>{state.message || 'Sandbox Merchant ID/API key and domain whitelist are required.'}</span></div>
+        {state.qrImage && !terminal
+          ? <div className="payway-status ready"><strong>Waiting for verified payment.</strong><span>Status: {state.paymentStatus}</span><span>Callback alone cannot mark this order paid.</span></div>
+          : <div className="payway-status warning"><strong>{state.loading?'Connecting to ABA PayWay…':terminal?'Payment failed or cancelled.':'Payment setup incomplete.'}</strong><span>{state.error || state.message || 'Retry when the payment service is ready.'}</span></div>
         }
 
-        {state.abapayDeeplink && <a className="payway-pay" href={state.abapayDeeplink}>Open in ABA Mobile</a>}
-        <div className="payway-methods"><span>ABA PAY</span><span>KHQR</span><span>VISA</span><span>Mastercard</span></div>
-        <small>The order is marked paid only after ABA PayWay callback/status verification succeeds.</small>
+        {(terminal || state.error || (!state.loading && !state.qrImage)) &&
+          <button className="payway-pay" onClick={()=>setAttempt(x=>x+1)}>Retry payment</button>
+        }
+        <small>No card number, ABA password, OTP, or payment credential is stored by this marketplace.</small>
       </div>
     </div>
   </section>;
